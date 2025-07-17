@@ -1,0 +1,42 @@
+name: Auto Forward PR
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [SIT, UAT]
+
+jobs:
+  create-forward-pr:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up GitHub CLI
+        uses: cli/cli-action@v2
+      - name: Determine next branch
+        id: next_branch
+        run: |
+          if [[ "${{ github.ref_name }}" == "SIT" ]]; then
+            echo "branch=UAT" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_name }}" == "UAT" ]]; then
+            echo "branch=main" >> $GITHUB_OUTPUT
+          else
+            echo "No forward branch for ${{ github.ref_name }}"
+            exit 1
+          fi
+      - name: Check for existing PR
+        id: check_pr
+        run: |
+          pr_count=$(gh pr list --base "${{ steps.next_branch.outputs.branch }}" --head "${{ github.ref_name }}" --state open --json number | jq 'length')
+          echo "count=$pr_count" >> $GITHUB_OUTPUT
+      - name: Create PR to next branch
+        if: steps.check_pr.outputs.count == '0'
+        run: |
+          gh pr create \
+            --base "${{ steps.next_branch.outputs.branch }}" \
+            --head "${{ github.ref_name }}" \
+            --title "Promote ${{ github.ref_name }} to ${{ steps.next_branch.outputs.branch }}" \
+            --body "Auto-generated PR to promote changes from ${{ github.ref_name }} to ${{ steps.next_branch.outputs.branch }}."
