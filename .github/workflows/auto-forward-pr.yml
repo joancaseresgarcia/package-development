@@ -4,6 +4,8 @@ on:
   pull_request:
     types: [closed]
     branches: [SIT, UAT]
+    paths:
+      - "force-app/**"
 
 jobs:
   create-forward-pr:
