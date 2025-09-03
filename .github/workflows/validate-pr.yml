@@ -1,0 +1,147 @@
+name: PR Validation (No Deploy)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main, SIT, UAT]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    permissions:
+      pull-requests: write
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
+      SFDC_ORG_ALIAS: ${{ (github.head_ref || github.ref_name) == 'main' && 'PROD' || (github.head_ref || github.ref_name) }}
+      SFDX_AUTH_URL: ${{ (github.head_ref || github.ref_name) == 'main' && secrets.SFDX_JWT_MAIN || (github.head_ref || github.ref_name) == 'SIT' && secrets.SFDX_JWT_SIT || (github.head_ref || github.ref_name) == 'UAT' && secrets.SFDX_JWT_UAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Debug Targets
+        run: |
+          echo "TARGET_BRANCH=$TARGET_BRANCH"
+          echo "SFDC_ORG_ALIAS=$SFDC_ORG_ALIAS"
+      - name: Debug Auth URL
+        run: |
+          echo "Using $TARGET_BRANCH → ${{ env.SFDX_AUTH_URL }}"
+      - name: Cache Salesforce CLI Plugins
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.sf/plugins
+            ~/.local/share/sf/plugins
+          key: sf-plugins-${{ runner.os }}-${{ hashFiles('.github/workflows/validate-pr.yml') }}
+          restore-keys: |
+            sf-plugins-${{ runner.os }}-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ">=20.9.0"
+          cache: "npm"
+      - uses: actions/setup-java@v4
+        with:
+          java-version: ">=11"
+          distribution: "zulu"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ">=3.10"
+      - run: npm install -g @salesforce/cli@latest
+      - run: sf plugins install code-analyzer@latest
+      - name: Run Salesforce Code Analyzer
+        id: run-code-analyzer
+        uses: forcedotcom/run-code-analyzer@v2
+        with:
+          run-arguments: --workspace . --view detail --output-file sfca_results.html --output-file sfca_results.json
+          results-artifact-name: salesforce-code-analyzer-results
+          github-token: ${{ github.token }}
+      - name: Echo Analyzer Violation Summary
+        run: |
+          if [ -f sfca_results.json ]; then
+            echo "Salesforce Code Analyzer Violation Summary:"
+            jq '.results[] | {engine: .engine, violations: .violations | length}' sfca_results.json
+          else
+            echo "No analyzer results found."
+          fi
+      - name: Check the Outputs to Determine Whether to Fail
+        if: |
+          steps.run-code-analyzer.outputs.exit-code > 0 ||
+          steps.run-code-analyzer.outputs.num-sev1-violations > 0 ||
+          steps.run-code-analyzer.outputs.num-sev2-violations > 0 ||
+          steps.run-code-analyzer.outputs.num-violations > 10
+        run: exit 1
+      - name: Always Upload Analyzer Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: salesforce-code-analyzer-results
+          path: |
+            sfca_results.html
+            sfca_results.json
+      - name: Fetch base branch
+        run: |
+          git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1 || git fetch --prune
+      - name: Generate Delta
+        run: sf sgd:source:delta --from origin/${{ github.event.pull_request.base.ref }} --to HEAD --output-dir delta
+      - name: Abort if No Metadata or Destructive Changes
+        run: |
+          if [ -z "$(ls -A delta 2>/dev/null)" ] && [ ! -f destructiveChanges/destructiveChanges.xml ]; then
+            echo "Nothing to validate"
+            exit 0
+          fi
+      - name: Authenticate (JWT)
+        uses: salesforce/sfdx-actions@v1
+        with:
+          sfdx_auth_url: ${{ env.SFDX_AUTH_URL }}
+          target_org: ${{ env.SFDC_ORG_ALIAS }}
+      - name: Validate Deployment
+        run: |
+          BASE_ARGS=""
+          if [ -f destructiveChanges/destructiveChanges.xml ]; then
+            BASE_ARGS="--post-destructive-changes destructiveChanges/destructiveChanges.xml"
+          fi
+          if [[ "${{ env.TARGET_BRANCH }}" == "main" ]]; then
+            sf project deploy validate \
+              --manifest manifest/package.xml \
+              $BASE_ARGS \
+              --target-org ${{ env.SFDC_ORG_ALIAS }}
+          else
+            sf project deploy start \
+              --manifest manifest/package.xml \
+              $BASE_ARGS \
+              --dry-run \
+              --test-level RunLocalTests \
+              --target-org ${{ env.SFDC_ORG_ALIAS }}
+          fi
+      - name: Run Apex Tests & Check Coverage
+        run: |
+          sf apex run test \
+            --resultformat human \
+            --wait 30 \
+            --codecoverage \
+            --json \
+            --outputdir test-results \
+            --target-org ${{ env.SFDC_ORG_ALIAS }}
+          file=$(ls test-results/*-test-result.json 2>/dev/null | head -1 || echo test-results/test-result.json)
+          cov=$(jq -r '(.result.summary.orgWideCoverage // .result.coverage.orgWideCoverage)' "$file")
+          echo "Coverage: $cov%"
+          if (( $(echo "$cov < 75" | bc -l) )); then
+            echo "❌ Coverage below threshold"
+            exit 1
+          fi
+      - name: Upload Apex Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apex-test-results
+          path: test-results

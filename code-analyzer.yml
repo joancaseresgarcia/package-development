@@ -1,0 +1,199 @@
+# ======================================================================
+# CODE ANALYZER CONFIGURATION
+# This file customizes Salesforce Code Analyzer for CI/CD validation.
+# - Style and best practices: relaxed (Info/Low severity)
+# - Critical issues (debug code, missing docs, complexity, SOQL-in-loop): strict (High/Critical)
+#
+# For more info: https://developer.salesforce.com/docs/platform/salesforce-code-analyzer/guide/config-custom.html
+# ======================================================================
+
+# Root directory for relative paths (null = auto-detect)
+config_root: null
+# Where to store log files (null = system temp)
+log_folder: null
+# Log verbosity (1=Error, 5=Fine)
+log_level: 4
+
+# Rule overrides: set severity/tags for specific rules.
+rules:
+  eslint:
+    sort-vars:
+      severity: Info
+      tags: ["Recommended", "Suggestion", "CodeStyle"]
+    no-console:
+      severity: Info
+      tags: ["CodeStyle", "Debug"]
+    no-unused-vars:
+      severity: Low
+      tags: ["BestPractices", "CodeStyle"]
+    eqeqeq:
+      severity: Low
+      tags: ["BestPractices", "CodeStyle"]
+    no-debugger:
+      severity: Info
+      tags: ["Debug"]
+    no-alert:
+      severity: Info
+      tags: ["BestPractices", "Security"]
+    complexity:
+      severity: Low
+      tags: ["Performance", "BestPractices"]
+  regex:
+    NoTrailingWhitespace:
+      tags: ["CodeFormat"]
+      severity: Info
+    NoTodoComments:
+      tags: ["CodeFormat", "TechDebt"]
+      severity: Info
+    # Critical: System.debug statements must not be committed to production code.
+    # Remove all debug statements before merging.
+    NoSystemDebug:
+      tags: ["Security", "BestPractices", "CI-Blocker"]
+      severity: Critical
+    # Security: Detect hardcoded secrets, credentials, or API keys in code (regex is basic, adjust as needed).
+    HardcodedSecret:
+      tags: ["Security", "Sensitive", "CI-Blocker"]
+      severity: Critical
+    # Performance: DML statements (insert, update, delete, upsert) inside loops are a major anti-pattern in Apex.
+    DMLInLoop:
+      tags: ["Performance", "BestPractices", "CI-Blocker"]
+      severity: Critical
+  pmd:
+    # High: All classes must have ApexDoc documentation for maintainability.
+    ApexDoc:
+      severity: High
+      tags: ["Documentation", "BestPractices", "CI-Blocker"]
+    # High: Cognitive complexity should be kept low for maintainability.
+    CognitiveComplexity:
+      severity: High
+      tags: ["Complexity", "Maintainability", "CI-Blocker"]
+    # Critical: SOQL inside loops is a major performance anti-pattern.
+    SOQLInLoop:
+      severity: Critical
+      tags: ["Performance", "BestPractices", "CI-Blocker"]
+    # Critical: DML inside loops is a major performance anti-pattern (PMD built-in rule).
+    DMLInLoop:
+      severity: Critical
+      tags: ["Performance", "BestPractices", "CI-Blocker"]
+  # cpd, sfge, flow: no custom rule overrides
+  cpd: {}
+  sfge: {}
+  flow: {}
+
+# Engine-specific configuration
+engines:
+  # Retire-JS engine is not used in this project. Explicitly disabled for clarity.
+  retire-js:
+    disable_engine: true
+
+  regex:
+    disable_engine: false
+    custom_rules:
+      # Detect TODO comments in code (tech debt marker, not CI-blocking)
+      NoTodoComments:
+        regex: /TODO/gi
+        file_extensions: [".apex", ".cls", ".trigger", ".js", ".ts"]
+        description: "Prevents TODO comments from being in code."
+        violation_message: "A comment with a TODO statement was found. Please remove TODO statements from your code."
+        severity: Info
+        tags: ["TechDebt", "CodeFormat"]
+      # Disallow trailing whitespace at the end of lines (style)
+      NoTrailingWhitespace:
+        regex: /\s+$/gm
+        file_extensions: [".apex", ".cls", ".trigger", ".js", ".ts"]
+        description: "Disallow trailing whitespace at the end of lines."
+        violation_message: "Trailing whitespace detected. Please remove it."
+        severity: Info
+        tags: ["CodeFormat"]
+      # Disallow System.debug statements in Apex code (CI-blocker)
+      NoSystemDebug:
+        regex: /System\.debug/gi
+        file_extensions: [".apex", ".cls", ".trigger"]
+        description: "Disallow System.debug statements in Apex code."
+        violation_message: "System.debug statement found. Remove all debug statements before committing."
+        severity: Critical
+        tags: ["Security", "BestPractices", "CI-Blocker"]
+      # Detect hardcoded secrets, credentials, or API keys (basic regex, adjust as needed)
+      HardcodedSecret:
+        regex: (password\s*=|api[_-]?key\s*=|secret\s*=|token\s*=|client[_-]?secret\s*=|access[_-]?key\s*=)[^\n]+\n?
+        file_extensions: [".apex", ".cls", ".trigger", ".js", ".ts"]
+        description: "Detects hardcoded secrets, credentials, or API keys."
+        violation_message: "Hardcoded secret or credential detected. Remove sensitive data from code."
+        severity: Critical
+        tags: ["Security", "Sensitive", "CI-Blocker"]
+      # Detect DML statements inside loops (performance anti-pattern)
+      DMLInLoop:
+        regex: (for\s*\(.*\)\s*\{[^}]*?(insert|update|delete|upsert)[^;]*;)
+        file_extensions: [".apex", ".cls", ".trigger"]
+        description: "Detects DML statements inside loops."
+        violation_message: "DML statement found inside a loop. Refactor to bulkify your code."
+        severity: Critical
+        tags: ["Performance", "BestPractices", "CI-Blocker"]
+
+  eslint:
+    disable_engine: false
+    eslint_config_file: eslint.config.js
+    eslint_ignore_file: null
+    auto_discover_eslint_config: false
+    disable_javascript_base_config: false
+    disable_lwc_base_config: false
+    disable_typescript_base_config: false
+    file_extensions:
+      javascript:
+        - .js
+        - .cjs
+        - .mjs
+      typescript:
+        - .ts
+      other: []
+
+  pmd: {}
+
+  cpd:
+    disable_engine: false
+    java_command: null
+    file_extensions:
+      apex:
+        - .cls
+        - .trigger
+      html:
+        - .html
+        - .htm
+        - .xhtml
+        - .xht
+        - .shtml
+        - .cmp
+      javascript:
+        - .js
+        - .cjs
+        - .mjs
+      typescript:
+        - .ts
+      visualforce:
+        - .page
+        - .component
+      xml:
+        - .xml
+    minimum_tokens:
+      apex: 100
+      html: 100
+      javascript: 100
+      typescript: 100
+      visualforce: 100
+      xml: 100
+    skip_duplicate_files: false
+
+  sfge:
+    disable_engine: false
+    disable_limit_reached_violations: false
+    java_command: null
+    java_max_heap_size: null
+    java_thread_count: 4
+    java_thread_timeout: 900000
+
+  flow:
+    disable_engine: false
+    python_command: null
+# ======================================================================
+# END OF CODE ANALYZER CONFIGURATION
+# ======================================================================

@@ -1,0 +1,94 @@
+name: Post-Merge Deploy
+
+on:
+  push:
+    branches: [main, SIT, UAT]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ github.ref_name }}
+      SFDC_ORG_ALIAS: ${{ github.ref_name == 'main' && 'PROD' || github.ref_name }}
+      SFDX_AUTH_URL: ${{ github.ref_name == 'main' && secrets.SFDX_JWT_MAIN || github.ref_name == 'SIT' && secrets.SFDX_JWT_SIT || github.ref_name == 'UAT' && secrets.SFDX_JWT_UAT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Cache Salesforce CLI Plugins
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.sf/plugins
+            ~/.local/share/sf/plugins
+          key: sf-plugins-${{ runner.os }}-${{ hashFiles('.github/workflows/deploy-on-push.yml') }}
+          restore-keys: |
+            sf-plugins-${{ runner.os }}-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ">=20.9.0"
+          cache: "npm"
+      - uses: actions/setup-java@v4
+        with:
+          java-version: ">=11"
+          distribution: "zulu"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ">=3.10"
+      - run: npm install -g @salesforce/cli@latest
+      - run: sf plugins install code-analyzer@latest
+      - name: Authenticate (JWT)
+        uses: salesforce/sfdx-actions@v1
+        with:
+          sfdx_auth_url: ${{ env.SFDX_AUTH_URL }}
+          target_org: ${{ env.SFDC_ORG_ALIAS }}
+      - name: Ensure All Git History
+        run: |
+          git fetch --prune --unshallow || git fetch --prune
+      - name: Generate Delta
+        run: sf sgd:source:delta --from origin/${{ github.ref_name }}~1 --to HEAD --output-dir delta
+      - name: Abort if No Changes
+        run: |
+          if [ -d delta ] && [ -z "$(ls -A delta)" ] && [ ! -s destructiveChanges/destructiveChanges.xml ]; then
+            echo "Nothing to deploy"
+            exit 0
+          fi
+      - name: Deploy Changes
+        id: deploy
+        run: |
+          sf project deploy start \
+            --manifest manifest/package.xml \
+            --deploydir delta \
+            --post-destructive-changes destructiveChanges/destructiveChanges.xml \
+            --target-org ${{ env.SFDC_ORG_ALIAS }} \
+            --verbose \
+            --json > deploy-output.json
+      - name: Upload Deploy Logs (if failed)
+        if: failure() && steps.deploy.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-logs
+          path: deploy-output.json
+      - name: Echo Deploy Result Summary
+        run: |
+          if [ -f deploy-output.json ]; then
+            echo "Deploy Result Summary:"
+            jq '.result | {status, numberComponentErrors, numberTestErrors, details: {componentSuccesses, componentFailures, runTestResult}}' deploy-output.json || cat deploy-output.json
+          else
+            echo "No deploy output found."
+          fi
+      - name: Monitor Deploy
+        run: |
+          sf project deploy report --wait 30 --target-org ${{ env.SFDC_ORG_ALIAS }}
+      - name: Post-Deploy Smoke Tests (Optional)
+        run: |
+          echo "Add smoke tests or health checks here."
