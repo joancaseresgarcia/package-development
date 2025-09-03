@@ -101,11 +101,10 @@ jobs:
             echo "Nothing to validate"
             exit 0
           fi
-      - name: Authenticate (JWT)
-        uses: salesforce/sfdx-actions@v1
-        with:
-          sfdx_auth_url: ${{ env.SFDX_AUTH_URL }}
-          target_org: ${{ env.SFDC_ORG_ALIAS }}
+      - name: Authenticate with Salesforce using Auth URL
+        run: |
+          echo "$SFDX_AUTH_URL" > auth-url.txt
+          sf org login sfdx-url --sfdx-url-file auth-url.txt --alias $SFDC_ORG_ALIAS --set-default
       - name: Validate Deployment
         run: |
           BASE_ARGS=""
