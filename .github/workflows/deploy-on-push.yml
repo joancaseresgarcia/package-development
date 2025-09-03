@@ -3,6 +3,8 @@ name: Post-Merge Deploy
 on:
   push:
     branches: [main, SIT, UAT]
+    paths:
+      - "force-app/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
